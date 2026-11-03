@@ -1,0 +1,356 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL") // Necesario para la conexión directa a Supabase
+}
+
+enum Role {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  PROPERTY_MANAGER
+  OWNER
+  TENANT_USER
+}
+
+enum ContractStatus {
+  ACTIVE
+  PENDING
+  EXPIRED
+  TERMINATED
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+// ------------------------------------------------------
+// ESTRUCTURA SAAS / MULTI-TENANT
+// ------------------------------------------------------
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  taxId     String?  // CUIT / NIT / RUT
+  email     String   @unique
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users     User[]
+  buildings Building[]
+
+  @@map("tenants")
+}
+
+model User {
+  id        String   @id // Sincronizado con Supabase Auth UUID
+  tenantId  String
+  email     String   @unique
+  firstName String
+  lastName  String
+  phone     String?
+  role      Role     @default(TENANT_USER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ownedUnits          Unit[]               @relation("UnitOwner")
+  tenantContracts     Contract[]           @relation("ContractTenant")
+  tickets             Ticket[]
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+enum LiquidationStatus {
+  DRAFT
+  PUBLISHED
+  CLOSED
+}
+
+enum ExpenseCategory {
+  ORDINARY_A
+  ORDINARY_B
+  EXTRAORDINARY
+  RESERVE_FUND
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  OVERDUE
+}
+
+enum UnitType {
+  DEPARTAMENTO
+  COCHERA
+  BAULERA
+  LOCAL
+  OTRO
+}
+
+// ------------------------------------------------------
+// GESTIÓN DE CONSORCIOS / EDIFICIOS
+// ------------------------------------------------------
+
+model Building {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String
+  address   String
+  city      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  units        Unit[]
+  expenses     Expense[]
+  liquidations ExpenseLiquidation[]
+  amenities    Amenity[]
+  tickets      Ticket[]
+  recurringExpenseTemplates RecurringExpenseTemplate[]
+
+  @@index([tenantId])
+  @@map("buildings")
+}
+
+model Unit {
+  id             String             @id @default(uuid())
+  buildingId     String
+  organizationId String?            // Clerk org / tenant ID
+  name           String?            // Ej: "1° A", "PB 2", "Cochera 4", "Local 1"
+  code           String?            // Código identificatorio / U.F. (ej: "UF-01")
+  type           UnitType           @default(DEPARTAMENTO)
+  number         String             // Número o identificación principal (ej: "4B", "1A")
+  floor          Int?               // Piso (opcional)
+  door           String?            // Puerta / letra / dpto
+  coefficient    Float              // Porcentaje de prorrateo fiscal de la unidad (ej: 4.25 = 4.25%)
+  
+  // Datos del Propietario
+  ownerId        String?            // ID de usuario si está registrado en el sistema
+  ownerName      String?            // Nombre y apellido del propietario
+  ownerEmail     String?            // Email para envío de expensas y avisos
+  ownerPhone     String?            // Teléfono de contacto
+  
+  // Datos del Inquilino / Ocupante (opcional)
+  tenantName     String?            // Nombre y apellido del inquilino
+  tenantEmail    String?            // Email del inquilino
+  tenantPhone    String?            // Teléfono del inquilino
+  
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  building       Building           @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  owner          User?              @relation("UnitOwner", fields: [ownerId], references: [id])
+  contracts      Contract[]
+  statements     ExpenseStatement[]
+  receipts       ExpenseReceipt[]
+
+  @@index([buildingId])
+  @@index([organizationId])
+  @@index([ownerId])
+  @@map("units")
+}
+
+model Amenity {
+  id          String   @id @default(uuid())
+  buildingId  String
+  name        String   // Ej: "SUM", "Parrilla", "Gimnasio"
+  description String?
+  createdAt   DateTime @default(now())
+
+  building    Building      @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  bookings    Booking[]
+
+  @@map("amenities")
+}
+
+model Booking {
+  id        String   @id @default(uuid())
+  amenityId String
+  userId    String
+  date      DateTime
+  startTime String   // Ej: "14:00"
+  endTime   String   // Ej: "18:00"
+  status    String   @default("CONFIRMED")
+  createdAt DateTime @default(now())
+
+  amenity   Amenity  @relation(fields: [amenityId], references: [id], onDelete: Cascade)
+
+  @@map("bookings")
+}
+
+// ------------------------------------------------------
+// GESTIÓN DE ALQUILERES Y CONTRATOS
+// ------------------------------------------------------
+
+model Contract {
+  id             String         @id @default(uuid())
+  unitId         String
+  tenantUserId   String
+  startDate      DateTime
+  endDate        DateTime
+  monthlyAmount  Decimal        @db.Decimal(12, 2)
+  adjustmentRate Float?         // Porcentaje de ajuste periódico
+  status         ContractStatus @default(ACTIVE)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  unit           Unit           @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  tenantUser     User           @relation("ContractTenant", fields: [tenantUserId], references: [id])
+
+  @@index([unitId])
+  @@index([tenantUserId])
+  @@map("contracts")
+}
+
+// ------------------------------------------------------
+// LIQUIDACIÓN DE EXPENSAS Y GASTOS (NUEVO MÓDULO)
+// ------------------------------------------------------
+
+model ExpenseLiquidation {
+  id             String            @id @default(uuid())
+  organizationId String            // Clerk org o tenantId de la administración
+  buildingId     String
+  month          Int               // 1 - 12
+  year           Int
+  status         LiquidationStatus @default(DRAFT)
+  dueDateFirst   DateTime
+  dueDateSecond  DateTime?
+  interestRate   Float?            @default(0) // Recargo / interés para segundo vencimiento o mora (ej: 5%)
+  totalAmount    Decimal           @default(0) @db.Decimal(12, 2)
+  notes          String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  building       Building          @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  items          ExpenseItem[]
+  receipts       ExpenseReceipt[]
+
+  @@unique([buildingId, year, month])
+  @@index([buildingId])
+  @@index([organizationId])
+  @@map("expense_liquidations")
+}
+
+model ExpenseItem {
+  id            String             @id @default(uuid())
+  liquidationId String
+  category      ExpenseCategory    @default(ORDINARY_A)
+  description   String
+  supplierName  String?
+  invoiceNumber String?
+  amount        Decimal            @db.Decimal(12, 2)
+  date          DateTime           @default(now())
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  liquidation   ExpenseLiquidation @relation(fields: [liquidationId], references: [id], onDelete: Cascade)
+
+  @@index([liquidationId])
+  @@map("expense_items")
+}
+
+model ExpenseReceipt {
+  id                  String             @id @default(uuid())
+  liquidationId       String
+  unitId              String
+  coefficient         Float              // Coeficiente prorrateado (%)
+  ordinaryAmount      Decimal            @default(0) @db.Decimal(12, 2)
+  extraordinaryAmount Decimal            @default(0) @db.Decimal(12, 2)
+  previousDebt        Decimal            @default(0) @db.Decimal(12, 2)
+  totalPayable        Decimal            @default(0) @db.Decimal(12, 2)
+  paymentStatus       PaymentStatus      @default(PENDING)
+  paidAt              DateTime?
+  paymentMethod       String?
+  paymentReference    String?
+  receiptNumber       String?
+  notes               String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  liquidation         ExpenseLiquidation @relation(fields: [liquidationId], references: [id], onDelete: Cascade)
+  unit                Unit               @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@unique([liquidationId, unitId])
+  @@index([liquidationId])
+  @@index([unitId])
+  @@map("expense_receipts")
+}
+
+// Modelos heredados / legacy para compatibilidad
+model Expense {
+  id          String   @id @default(uuid())
+  buildingId  String
+  description String
+  amount      Decimal  @db.Decimal(12, 2)
+  category    String   // Ej: "Mantenimiento", "Servicios", "Sueldos"
+  period      String   // Ej: "2026-10"
+  createdAt   DateTime @default(now())
+
+  building    Building @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+
+  @@index([buildingId, period])
+  @@map("expenses")
+}
+
+model ExpenseStatement {
+  id         String    @id @default(uuid())
+  unitId     String
+  period     String    // Ej: "2026-10"
+  amount     Decimal   @db.Decimal(12, 2)
+  dueDate    DateTime
+  isPaid     Boolean   @default(false)
+  paidAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  unit       Unit      @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@index([unitId, period])
+  @@map("expense_statements")
+}
+
+// ------------------------------------------------------
+// SOPORTE Y MANTENIMIENTO (TICKETS)
+// ------------------------------------------------------
+
+model Ticket {
+  id          String       @id @default(uuid())
+  buildingId  String
+  createdById String
+  title       String
+  description String
+  status      TicketStatus @default(OPEN)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  building    Building     @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  createdBy   User         @relation(fields: [createdById], references: [id])
+
+  @@index([buildingId])
+  @@map("tickets")
+}
+model RecurringExpenseTemplate {
+  id             String          @id @default(uuid())
+  organizationId String
+  buildingId     String?
+  category       ExpenseCategory
+  concept        String
+  supplierName   String
+  defaultAmount  Float?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  building       Building?       @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([buildingId])
+  @@map("recurring_expense_templates")
+}
