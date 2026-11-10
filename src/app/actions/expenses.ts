@@ -2,7 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { syncUserWithPrisma } from "@/app/actions/users";
-import { ExpenseCategory, LiquidationStatus, PaymentStatus } from "@prisma/client";
+import { ExpenseCategory, LiquidationStatus, PaymentStatus, UnitType } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
@@ -25,10 +25,37 @@ const CreateLiquidationSchema = z.object({
   dueDateSecond: z.string().optional().nullable(),
   interestRate: z.coerce.number().min(0).max(100).default(0),
   notes: z.string().max(500).optional().nullable(),
+  unitCoefficients: z
+    .array(
+      z.object({
+        unitId: z.string(),
+        coefficient: z.coerce.number().min(0),
+      })
+    )
+    .optional(),
+});
+
+const UpdateLiquidationSchema = z.object({
+  dueDateFirst: z.string().min(1, "La fecha del 1er vencimiento es obligatoria"),
+  dueDateSecond: z.string().optional().nullable(),
+  interestRate: z.coerce.number().min(0).max(100).default(0),
+  notes: z.string().max(500).optional().nullable(),
 });
 
 const AddExpenseItemSchema = z.object({
   liquidationId: z.string().min(1, "La liquidación es obligatoria"),
+  category: z.nativeEnum(ExpenseCategory, {
+    message: "Categoría de gasto inválida",
+  }),
+  description: z.string().min(2, "La descripción debe tener al menos 2 caracteres").max(255),
+  supplierName: z.string().max(150).optional().nullable(),
+  invoiceNumber: z.string().max(100).optional().nullable(),
+  amount: z.coerce.number().positive("El monto debe ser un valor positivo mayor a 0"),
+  date: z.string().optional().nullable(),
+});
+
+const UpdateExpenseItemSchema = z.object({
+  itemId: z.string().min(1, "El comprobante es obligatorio"),
   category: z.nativeEnum(ExpenseCategory, {
     message: "Categoría de gasto inválida",
   }),
@@ -76,8 +103,16 @@ export async function createLiquidationPeriod(
       return { success: false, error: firstError };
     }
 
-    const { buildingId, month, year, dueDateFirst, dueDateSecond, interestRate, notes } =
-      parsed.data;
+    const {
+      buildingId,
+      month,
+      year,
+      dueDateFirst,
+      dueDateSecond,
+      interestRate,
+      notes,
+      unitCoefficients,
+    } = parsed.data;
 
     // Verificar pertenencia del edificio al tenant
     const building = await prisma.building.findFirst({
@@ -107,19 +142,31 @@ export async function createLiquidationPeriod(
       };
     }
 
-    const newLiquidation = await prisma.expenseLiquidation.create({
-      data: {
-        organizationId: tenantId,
-        buildingId,
-        month,
-        year,
-        status: LiquidationStatus.DRAFT,
-        dueDateFirst: new Date(dueDateFirst),
-        dueDateSecond: dueDateSecond ? new Date(dueDateSecond) : null,
-        interestRate,
-        notes: notes || null,
-        totalAmount: 0,
-      },
+    const newLiquidation = await prisma.$transaction(async (tx) => {
+      // Si se enviaron coeficientes actualizados, guardarlos en las unidades correspondientes
+      if (unitCoefficients && unitCoefficients.length > 0) {
+        for (const uc of unitCoefficients) {
+          await tx.unit.update({
+            where: { id: uc.unitId },
+            data: { coefficient: Math.max(0, Number(uc.coefficient.toFixed(4))) },
+          });
+        }
+      }
+
+      return await tx.expenseLiquidation.create({
+        data: {
+          organizationId: tenantId,
+          buildingId,
+          month,
+          year,
+          status: LiquidationStatus.DRAFT,
+          dueDateFirst: new Date(dueDateFirst),
+          dueDateSecond: dueDateSecond ? new Date(dueDateSecond) : null,
+          interestRate,
+          notes: notes || null,
+          totalAmount: 0,
+        },
+      });
     });
 
     revalidatePath("/dashboard/expensas");
@@ -167,10 +214,10 @@ export async function addExpenseItem(rawData: unknown): Promise<ActionResponse<{
       return { success: false, error: "Liquidación no encontrada o no autorizada." };
     }
 
-    if (liquidation.status !== LiquidationStatus.DRAFT) {
+    if (liquidation.status === LiquidationStatus.CLOSED) {
       return {
         success: false,
-        error: "No se pueden agregar gastos a una liquidación que ya fue emitida o cerrada.",
+        error: "No se pueden agregar gastos a una liquidación que ya fue cerrada contablemente.",
       };
     }
 
@@ -198,6 +245,7 @@ export async function addExpenseItem(rawData: unknown): Promise<ActionResponse<{
     ]);
 
     revalidatePath("/dashboard/expensas");
+    revalidatePath(`/dashboard/expensas/${liquidationId}`);
     return {
       success: true,
       message: "Gasto agregado correctamente a la liquidación.",
@@ -208,6 +256,84 @@ export async function addExpenseItem(rawData: unknown): Promise<ActionResponse<{
     return {
       success: false,
       error: error instanceof Error ? error.message : "Error inesperado al cargar el gasto.",
+    };
+  }
+}
+
+/**
+ * Modificar un comprobante o gasto cargado
+ */
+export async function updateExpenseItem(rawData: unknown): Promise<ActionResponse> {
+  try {
+    const { tenantId } = await getAuthenticatedTenant();
+
+    const parsed = UpdateExpenseItemSchema.safeParse(rawData);
+    if (!parsed.success) {
+      const firstError = parsed.error.issues[0]?.message || "Datos del comprobante inválidos.";
+      return { success: false, error: firstError };
+    }
+
+    const { itemId, category, description, supplierName, invoiceNumber, amount, date } =
+      parsed.data;
+
+    const existingItem = await prisma.expenseItem.findFirst({
+      where: {
+        id: itemId,
+        liquidation: {
+          building: { tenantId },
+        },
+      },
+      include: { liquidation: true },
+    });
+
+    if (!existingItem) {
+      return { success: false, error: "Comprobante de gasto no encontrado o no autorizado." };
+    }
+
+    if (existingItem.liquidation.status === LiquidationStatus.CLOSED) {
+      return {
+        success: false,
+        error: "No se pueden modificar gastos de un período cerrado contablemente.",
+      };
+    }
+
+    const oldAmount = Number(existingItem.amount);
+    const diff = amount - oldAmount;
+
+    await prisma.$transaction([
+      prisma.expenseItem.update({
+        where: { id: itemId },
+        data: {
+          category,
+          description: description.trim(),
+          supplierName: supplierName?.trim() || null,
+          invoiceNumber: invoiceNumber?.trim() || null,
+          amount,
+          date: date ? new Date(date) : existingItem.date,
+        },
+      }),
+      prisma.expenseLiquidation.update({
+        where: { id: existingItem.liquidationId },
+        data: {
+          totalAmount: {
+            increment: diff,
+          },
+        },
+      }),
+    ]);
+
+    revalidatePath("/dashboard/expensas");
+    revalidatePath(`/dashboard/expensas/${existingItem.liquidationId}`);
+
+    return {
+      success: true,
+      message: "Gasto actualizado correctamente.",
+    };
+  } catch (error) {
+    console.error("Error al actualizar gasto:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Error al actualizar el comprobante.",
     };
   }
 }
@@ -234,10 +360,10 @@ export async function deleteExpenseItem(itemId: string): Promise<ActionResponse>
       return { success: false, error: "Comprobante de gasto no encontrado." };
     }
 
-    if (item.liquidation.status !== LiquidationStatus.DRAFT) {
+    if (item.liquidation.status === LiquidationStatus.CLOSED) {
       return {
         success: false,
-        error: "No se pueden eliminar gastos de un período ya emitido o cerrado.",
+        error: "No se pueden eliminar gastos de un período ya cerrado contablemente.",
       };
     }
 
@@ -256,6 +382,7 @@ export async function deleteExpenseItem(itemId: string): Promise<ActionResponse>
     ]);
 
     revalidatePath("/dashboard/expensas");
+    revalidatePath(`/dashboard/expensas/${item.liquidationId}`);
     return { success: true, message: "Comprobante eliminado correctamente." };
   } catch (error) {
     console.error("Error al eliminar gasto:", error);
@@ -276,6 +403,7 @@ export interface UnitProrationPreview {
   floor: number | null;
   door?: string | null;
   code?: string | null;
+  unitType?: UnitType;
   ownerName: string;
   tenantName?: string | null;
   coefficient: number;
@@ -468,6 +596,7 @@ export async function calculateProrationData(liquidationId: string, tenantId: st
       floor: unit.floor,
       door: unit.door,
       code: unit.code,
+      unitType: unit.type,
       ownerName,
       tenantName,
       coefficient: unit.coefficient,
@@ -746,12 +875,123 @@ export async function closeLiquidationPeriod(liquidationId: string): Promise<Act
     });
 
     revalidatePath("/dashboard/expensas");
+    revalidatePath(`/dashboard/expensas/${liquidationId}`);
     return { success: true, message: "Período cerrado exitosamente." };
   } catch (error) {
     console.error("Error al cerrar período:", error);
     return {
       success: false,
       error: error instanceof Error ? error.message : "Error al cerrar el período.",
+    };
+  }
+}
+
+/**
+ * Reabre una liquidación emitida para volver a editar gastos, corregir facturas o recalcular
+ */
+export async function reopenLiquidationToDraft(liquidationId: string): Promise<ActionResponse> {
+  try {
+    const { tenantId } = await getAuthenticatedTenant();
+
+    const liquidation = await prisma.expenseLiquidation.findFirst({
+      where: {
+        id: liquidationId,
+        building: { tenantId },
+      },
+    });
+
+    if (!liquidation) {
+      return { success: false, error: "Liquidación no encontrada o no autorizada." };
+    }
+
+    if (liquidation.status === LiquidationStatus.CLOSED) {
+      return {
+        success: false,
+        error: "No se puede reabrir un período cerrado definitivamente.",
+      };
+    }
+
+    await prisma.expenseLiquidation.update({
+      where: { id: liquidationId },
+      data: { status: LiquidationStatus.DRAFT },
+    });
+
+    revalidatePath("/dashboard/expensas");
+    revalidatePath(`/dashboard/expensas/${liquidationId}`);
+
+    return {
+      success: true,
+      message: "Liquidación reabierta a Borrador. Ahora puedes editar o agregar facturas y reemitir las expensas.",
+    };
+  } catch (error) {
+    console.error("Error al reabrir liquidación:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Error al reabrir la liquidación.",
+    };
+  }
+}
+
+/**
+ * Actualiza los datos generales de una liquidación (vencimientos, tasa de interés, observaciones)
+ */
+export async function updateLiquidationPeriod(
+  liquidationId: string,
+  rawData: unknown
+): Promise<ActionResponse> {
+  try {
+    const { tenantId } = await getAuthenticatedTenant();
+
+    const parsed = UpdateLiquidationSchema.safeParse(rawData);
+    if (!parsed.success) {
+      return {
+        success: false,
+        error: parsed.error.issues[0]?.message || "Datos del formulario inválidos.",
+      };
+    }
+
+    const { dueDateFirst, dueDateSecond, interestRate, notes } = parsed.data;
+
+    const liquidation = await prisma.expenseLiquidation.findFirst({
+      where: {
+        id: liquidationId,
+        building: { tenantId },
+      },
+    });
+
+    if (!liquidation) {
+      return { success: false, error: "Liquidación no encontrada o no autorizada." };
+    }
+
+    if (liquidation.status === LiquidationStatus.CLOSED) {
+      return {
+        success: false,
+        error: "No se puede modificar un período cerrado contablemente.",
+      };
+    }
+
+    await prisma.expenseLiquidation.update({
+      where: { id: liquidationId },
+      data: {
+        dueDateFirst: new Date(dueDateFirst),
+        dueDateSecond: dueDateSecond ? new Date(dueDateSecond) : null,
+        interestRate,
+        notes: notes || null,
+      },
+    });
+
+    revalidatePath("/dashboard/expensas");
+    revalidatePath(`/dashboard/expensas/${liquidationId}`);
+
+    return {
+      success: true,
+      message: "Liquidación actualizada correctamente.",
+    };
+  } catch (error) {
+    console.error("Error al actualizar liquidación:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Error al actualizar la liquidación.",
     };
   }
 }
@@ -826,6 +1066,7 @@ export async function getLiquidations(buildingId?: string) {
         totalPending,
         itemsCount: liq.items.length,
         receiptsCount: liq.receipts.length,
+        notes: liq.notes,
         createdAt: liq.createdAt,
       };
     });

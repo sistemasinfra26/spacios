@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { LiquidationStatus } from "@prisma/client";
+import { LiquidationStatus, UnitType } from "@prisma/client";
 import { NewLiquidationModal } from "./NewLiquidationModal";
+import { EditLiquidationModal } from "./EditLiquidationModal";
 
 export interface LiquidationListItem {
   id: string;
@@ -16,6 +17,7 @@ export interface LiquidationListItem {
   dueDateFirst: Date | string;
   dueDateSecond: Date | string | null;
   interestRate: number | null;
+  notes?: string | null;
   totalAmount: number;
   totalCollected: number;
   totalPending: number;
@@ -24,11 +26,22 @@ export interface LiquidationListItem {
   createdAt: Date | string;
 }
 
-interface BuildingOption {
+export interface BuildingUnitOption {
+  id: string;
+  number: string;
+  name?: string | null;
+  type: UnitType;
+  floor: number | null;
+  door?: string | null;
+  coefficient: number;
+}
+
+export interface BuildingOption {
   id: string;
   name: string;
   address: string;
   unitsCount?: number;
+  units?: BuildingUnitOption[];
 }
 
 const MONTH_NAMES = [
@@ -202,7 +215,7 @@ export function LiquidationsTable({
                 <th className="px-5 py-3">1º Vto</th>
                 <th className="px-5 py-3 text-right">Total Gastos</th>
                 <th className="px-5 py-3">Recaudación</th>
-                <th className="px-5 py-3 text-right">Acción</th>
+                <th className="px-5 py-3 text-right">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border text-foreground">
@@ -295,16 +308,19 @@ export function LiquidationsTable({
                       </td>
 
                       <td className="px-5 py-4 text-right">
-                        <Link
-                          href={`/dashboard/expensas/${liq.id}`}
-                          className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                            liq.status === LiquidationStatus.DRAFT
-                              ? "bg-brand text-white hover:bg-brand-hover shadow-xs"
-                              : "border border-border hover:bg-muted-bg text-foreground"
-                          }`}
-                        >
-                          <span>{liq.status === LiquidationStatus.DRAFT ? "Cargar Gastos →" : "Ver Detalle →"}</span>
-                        </Link>
+                        <div className="flex items-center justify-end gap-2">
+                          <EditLiquidationModal liquidation={liq} />
+                          <Link
+                            href={`/dashboard/expensas/${liq.id}`}
+                            className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                              liq.status === LiquidationStatus.DRAFT
+                                ? "bg-brand text-white hover:bg-brand-hover shadow-xs"
+                                : "border border-border hover:bg-muted-bg text-foreground"
+                            }`}
+                          >
+                            <span>{liq.status === LiquidationStatus.DRAFT ? "Cargar Gastos →" : "Ver Detalle →"}</span>
+                          </Link>
+                        </div>
                       </td>
                     </tr>
                   );

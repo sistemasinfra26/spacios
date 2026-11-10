@@ -15,6 +15,10 @@ import { RegisterPaymentModal } from "./RegisterPaymentModal";
 import { ReceiptPrintModal, type ReceiptData, type BuildingReceiptInfo } from "./ReceiptPrintModal";
 import { LiquidationAuditSheetModal } from "../[id]/LiquidationAuditSheetModal";
 import { PaymentReceiptModal, type PaymentReceiptData } from "./PaymentReceiptModal";
+import { EditLiquidationModal } from "./EditLiquidationModal";
+import { EditExpenseItemModal } from "./EditExpenseItemModal";
+import { ExpenseTablePrintModal } from "./ExpenseTablePrintModal";
+import { AdjustProrationCoefficientsModal } from "./AdjustProrationCoefficientsModal";
 import { ExpenseCategory, LiquidationStatus, PaymentStatus } from "@prisma/client";
 
 interface LiquidationData {
@@ -82,6 +86,8 @@ export function LiquidationDetailView({
   const [selectedPaymentReceipt, setSelectedPaymentReceipt] = useState<PaymentReceiptData | null>(null);
   const [showPublishConfirmation, setShowPublishConfirmation] = useState(false);
   const [isAuditSheetOpen, setIsAuditSheetOpen] = useState(false);
+  const [isExpenseTablePrintOpen, setIsExpenseTablePrintOpen] = useState(false);
+  const [isAdjustCoefficientsOpen, setIsAdjustCoefficientsOpen] = useState(false);
 
   const isDraft = liquidation.status === LiquidationStatus.DRAFT;
   const isPublished = liquidation.status === LiquidationStatus.PUBLISHED;
@@ -193,6 +199,33 @@ export function LiquidationDetailView({
         </div>
 
         <div className="flex items-center gap-2.5 flex-wrap">
+          {!isClosed && (
+            <EditLiquidationModal
+              liquidation={{
+                id: liquidation.id,
+                buildingName: liquidation.buildingName,
+                buildingAddress: liquidation.buildingAddress,
+                month: liquidation.month,
+                year: liquidation.year,
+                status: liquidation.status,
+                dueDateFirst: liquidation.dueDateFirst,
+                dueDateSecond: liquidation.dueDateSecond,
+                interestRate: liquidation.interestRate,
+                notes: liquidation.notes,
+              }}
+              trigger={
+                <button
+                  type="button"
+                  className="bg-card border border-border hover:bg-muted-bg text-foreground text-xs font-semibold px-4 py-2.5 rounded-xl transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                  title="Editar vencimientos, intereses o notas de la liquidación"
+                >
+                  <span>✏️</span>
+                  <span>Editar Liquidación</span>
+                </button>
+              }
+            />
+          )}
+
           {isDraft && (
             <AddExpenseItemModal
               liquidationId={liquidation.id}
@@ -369,9 +402,20 @@ export function LiquidationDetailView({
             </div>
 
             {isDraft && (
-              <span className="text-xs font-semibold px-3 py-1 rounded-lg bg-amber-500/10 text-amber-600 border border-amber-500/20">
-                Modo Borrador • Los montos se fijan al emitir
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAdjustCoefficientsOpen(true)}
+                  className="px-3.5 py-1.5 rounded-xl bg-card border border-border hover:bg-muted-bg text-foreground text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                  title="Modificar porcentajes y coeficientes para locales, pisos o departamentos"
+                >
+                  <span>⚖️</span>
+                  <span>Ajustar Coeficientes</span>
+                </button>
+                <span className="text-xs font-semibold px-3 py-1 rounded-lg bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                  Modo Borrador • Los montos se fijan al emitir
+                </span>
+              </div>
             )}
           </div>
 
@@ -422,7 +466,19 @@ export function LiquidationDetailView({
                           )}
                         </td>
                         <td className="px-5 py-3.5 text-center font-mono font-semibold">
-                          {unit.coefficient.toFixed(3)}%
+                          {isDraft ? (
+                            <button
+                              type="button"
+                              onClick={() => setIsAdjustCoefficientsOpen(true)}
+                              className="hover:text-brand hover:underline cursor-pointer inline-flex items-center gap-1"
+                              title="Clic para ajustar coeficientes de prorrateo"
+                            >
+                              <span>{unit.coefficient.toFixed(3)}%</span>
+                              <span className="text-[10px] text-muted">✏️</span>
+                            </button>
+                          ) : (
+                            `${unit.coefficient.toFixed(3)}%`
+                          )}
                         </td>
                         <td className="px-5 py-3.5 text-right font-medium">
                           ${unit.ordinaryAmount.toLocaleString("es-AR", { minimumFractionDigits: 2 })}
@@ -562,13 +618,52 @@ export function LiquidationDetailView({
               </p>
             </div>
 
-            {isDraft && (
-              <AddExpenseItemModal
-                liquidationId={liquidation.id}
-                buildingId={liquidation.buildingId}
-                isDraft={true}
-              />
-            )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsExpenseTablePrintOpen(true)}
+                className="bg-card border border-border hover:bg-muted-bg text-foreground text-xs font-semibold px-3.5 py-2.5 rounded-xl transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                title="Imprimir planilla de comprobantes y gastos del período"
+              >
+                <span>🖨️</span>
+                <span>Imprimir Gastos</span>
+              </button>
+
+              {isDraft && (
+                <AddExpenseItemModal
+                  liquidationId={liquidation.id}
+                  buildingId={liquidation.buildingId}
+                  isDraft={true}
+                />
+              )}
+
+              {isPublished && (
+                <EditLiquidationModal
+                  liquidation={{
+                    id: liquidation.id,
+                    buildingName: liquidation.buildingName,
+                    buildingAddress: liquidation.buildingAddress,
+                    month: liquidation.month,
+                    year: liquidation.year,
+                    status: liquidation.status,
+                    dueDateFirst: liquidation.dueDateFirst,
+                    dueDateSecond: liquidation.dueDateSecond,
+                    interestRate: liquidation.interestRate,
+                    notes: liquidation.notes,
+                  }}
+                  trigger={
+                    <button
+                      type="button"
+                      className="px-3.5 py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                      title="Reabrir a borrador para modificar facturas"
+                    >
+                      <span>🔓</span>
+                      <span>Reabrir para Modificar Gastos</span>
+                    </button>
+                  }
+                />
+              )}
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -603,7 +698,23 @@ export function LiquidationDetailView({
                 ) : (
                   liquidation.items.map((item) => (
                     <tr key={item.id} className="hover:bg-muted-bg/30 transition-colors">
-                      <td className="px-5 py-3.5 font-semibold">{item.description}</td>
+                      <td className="px-5 py-3.5 font-semibold">
+                        {isDraft ? (
+                          <EditExpenseItemModal
+                            item={item}
+                            trigger={
+                              <span
+                                className="hover:text-brand hover:underline cursor-pointer"
+                                title="Clic para editar este gasto"
+                              >
+                                {item.description}
+                              </span>
+                            }
+                          />
+                        ) : (
+                          item.description
+                        )}
+                      </td>
                       <td className="px-5 py-3.5">
                         <span
                           className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-semibold ${
@@ -629,14 +740,17 @@ export function LiquidationDetailView({
                       </td>
                       {isDraft && (
                         <td className="px-5 py-3.5 text-center">
-                          <button
-                            onClick={() => handleDeleteItem(item.id)}
-                            disabled={isPending}
-                            title="Eliminar gasto"
-                            className="text-red-500 hover:text-red-700 p-1 rounded-md hover:bg-red-500/10 transition-colors cursor-pointer text-xs"
-                          >
-                            🗑️
-                          </button>
+                          <div className="flex items-center justify-center gap-1.5">
+                            <EditExpenseItemModal item={item} />
+                            <button
+                              onClick={() => handleDeleteItem(item.id)}
+                              disabled={isPending}
+                              title="Eliminar gasto"
+                              className="text-red-500 hover:text-red-700 p-1 rounded-md hover:bg-red-500/10 transition-colors cursor-pointer text-xs"
+                            >
+                              🗑️
+                            </button>
+                          </div>
                         </td>
                       )}
                     </tr>
@@ -752,6 +866,50 @@ export function LiquidationDetailView({
         prorationList={prorationList}
         summary={summary}
       />
+
+      {/* Modal de Impresión de la Tabla de Gastos */}
+      <ExpenseTablePrintModal
+        isOpen={isExpenseTablePrintOpen}
+        onClose={() => setIsExpenseTablePrintOpen(false)}
+        liquidation={{
+          id: liquidation.id,
+          buildingName: liquidation.buildingName,
+          buildingAddress: liquidation.buildingAddress,
+          buildingCuit: liquidation.buildingCuit,
+          city: liquidation.city,
+          month: liquidation.month,
+          year: liquidation.year,
+          items: liquidation.items,
+        }}
+        summary={{
+          totalOrdinaryA: summary.totalOrdinary,
+          totalOrdinaryB: 0,
+          totalExtraordinary: summary.totalExtraordinary,
+          totalReserveFund: summary.totalReserveFund,
+          totalExpenses: summary.totalExpenses,
+        }}
+      />
+
+      {/* Modal para Ajustar Coeficientes de Prorrateo Flexible */}
+      {isAdjustCoefficientsOpen && (
+        <AdjustProrationCoefficientsModal
+          isOpen={isAdjustCoefficientsOpen}
+          onClose={() => setIsAdjustCoefficientsOpen(false)}
+          buildingId={liquidation.buildingId}
+          buildingName={liquidation.buildingName}
+          units={prorationList.map((p) => ({
+            unitId: p.unitId,
+            unitNumber: p.unitNumber,
+            floor: p.floor,
+            door: p.door,
+            unitType: p.unitType,
+            ownerName: p.ownerName,
+            tenantName: p.tenantName,
+            coefficient: p.coefficient,
+            totalPayable: p.totalPayable,
+          }))}
+        />
+      )}
     </div>
   );
 }

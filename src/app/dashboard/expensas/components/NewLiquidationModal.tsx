@@ -1,15 +1,10 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { createLiquidationPeriod } from "@/app/actions/expenses";
-
-interface BuildingOption {
-  id: string;
-  name: string;
-  address: string;
-  unitsCount?: number;
-}
+import { UnitType } from "@prisma/client";
+import type { BuildingOption } from "./LiquidationsTable";
 
 const MONTH_NAMES = [
   "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -38,8 +33,13 @@ export function NewLiquidationModal({
   const defaultDueDate1 = nextMonthDate.toISOString().split("T")[0];
   const defaultDueDate2 = nextMonthSecondDate.toISOString().split("T")[0];
 
+  const initialBuildingId =
+    selectedBuildingId && selectedBuildingId !== "ALL"
+      ? selectedBuildingId
+      : (buildings[0]?.id || "");
+
   const [formData, setFormData] = useState({
-    buildingId: selectedBuildingId && selectedBuildingId !== "ALL" ? selectedBuildingId : (buildings[0]?.id || ""),
+    buildingId: initialBuildingId,
     month: currentMonth,
     year: currentYear,
     dueDateFirst: defaultDueDate1,
@@ -47,6 +47,32 @@ export function NewLiquidationModal({
     interestRate: 5,
     notes: "Expensas ordinarias del período en curso.",
   });
+
+  // Unidades del edificio seleccionado
+  const selectedBuilding = buildings.find((b) => b.id === formData.buildingId);
+  const units = selectedBuilding?.units || [];
+
+  // Coeficientes personalizados
+  const [coefficients, setCoefficients] = useState<Record<string, number>>({});
+  const [showCoefficients, setShowCoefficients] = useState(false);
+  const [quickGroup, setQuickGroup] = useState<string>("LOCAL");
+  const [quickPercent, setQuickPercent] = useState<string>("");
+
+  useEffect(() => {
+    if (selectedBuilding?.units) {
+      const map: Record<string, number> = {};
+      for (const u of selectedBuilding.units) {
+        map[u.id] = u.coefficient;
+      }
+      setCoefficients(map);
+    }
+  }, [formData.buildingId, selectedBuilding]);
+
+  const totalSum = Number(
+    Object.values(coefficients)
+      .reduce((acc, val) => acc + (isNaN(val) ? 0 : val), 0)
+      .toFixed(4)
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,8 +83,16 @@ export function NewLiquidationModal({
       return;
     }
 
+    const payload = {
+      ...formData,
+      unitCoefficients: Object.entries(coefficients).map(([unitId, coeff]) => ({
+        unitId,
+        coefficient: Math.max(0, Number(coeff)),
+      })),
+    };
+
     startTransition(async () => {
-      const res = await createLiquidationPeriod(formData);
+      const res = await createLiquidationPeriod(payload);
       if (!res.success) {
         setError(res.error || "Ocurrió un error al crear la liquidación.");
       } else {
@@ -83,8 +117,8 @@ export function NewLiquidationModal({
       </button>
 
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
-          <div className="bg-card border border-border rounded-2xl w-full max-w-lg shadow-xl overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-start justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto animate-in fade-in duration-200">
+          <div className="bg-card border border-border rounded-2xl w-full max-w-xl shadow-xl overflow-hidden my-4 sm:my-8">
             <div className="p-6 border-b border-border flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-bold text-foreground">Abrir Nuevo Período de Expensas</h2>
@@ -93,8 +127,9 @@ export function NewLiquidationModal({
                 </p>
               </div>
               <button
+                type="button"
                 onClick={() => setIsOpen(false)}
-                className="text-muted hover:text-foreground p-1.5 rounded-lg hover:bg-muted-bg transition-colors"
+                className="text-muted hover:text-foreground p-1.5 rounded-lg hover:bg-muted-bg transition-colors cursor-pointer"
               >
                 ✕
               </button>
@@ -223,17 +258,155 @@ export function NewLiquidationModal({
                   rows={2}
                   value={formData.notes}
                   onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                  placeholder="Ej: Se recuerda que el abono de ascensores incluye la renovación de cables..."
+                  placeholder="Ej: Cuentas bancarias habilitadas o recordatorios del período..."
                   className="w-full bg-background border border-border rounded-xl px-3.5 py-2 text-xs text-foreground focus:outline-hidden focus:ring-2 focus:ring-brand/40 resize-none"
                 />
               </div>
+
+              {/* Sección de Coeficientes y Prorrateo Flexible por Locales / Pisos */}
+              {units.length > 0 && (
+                <div className="border border-border rounded-xl p-3.5 space-y-3 bg-muted-bg/30">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-foreground block">
+                        ⚖️ Coeficientes de Prorrateo ({units.length} Unidades)
+                      </span>
+                      <p className="text-[11px] text-muted">
+                        Personaliza los porcentajes para locales, pisos o departamentos según sus medidas.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowCoefficients(!showCoefficients)}
+                      className="px-2.5 py-1 text-xs font-bold rounded-lg border border-border hover:bg-card text-brand transition-colors cursor-pointer"
+                    >
+                      {showCoefficients ? "Ocultar detalles ▲" : "Configurar % ▼"}
+                    </button>
+                  </div>
+
+                  {showCoefficients && (
+                    <div className="space-y-3 pt-2 border-t border-border">
+                      {/* Herramienta rápida de asignación por grupo */}
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <select
+                          value={quickGroup}
+                          onChange={(e) => setQuickGroup(e.target.value)}
+                          className="bg-background border border-border rounded-lg px-2.5 py-1 text-xs font-medium text-foreground"
+                        >
+                          <option value="LOCAL">🏪 Locales Comerciales</option>
+                          <option value="DEPARTAMENTO">🏢 Departamentos</option>
+                          <option value="COCHERA">🚗 Cocheras</option>
+                        </select>
+                        <input
+                          type="number"
+                          step="0.001"
+                          placeholder="% c/u"
+                          value={quickPercent}
+                          onChange={(e) => setQuickPercent(e.target.value)}
+                          className="w-20 bg-background border border-border rounded-lg px-2 py-1 text-xs font-bold text-foreground"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const val = parseFloat(quickPercent);
+                            if (isNaN(val) || val < 0) return;
+                            setCoefficients((prev) => {
+                              const next = { ...prev };
+                              for (const u of units) {
+                                if (u.type === quickGroup) {
+                                  next[u.id] = val;
+                                }
+                              }
+                              return next;
+                            });
+                          }}
+                          className="px-2.5 py-1 bg-brand text-white text-xs font-bold rounded-lg cursor-pointer"
+                        >
+                          Aplicar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nonDeptSum = units
+                              .filter((u) => u.type !== UnitType.DEPARTAMENTO)
+                              .reduce((s, u) => s + (coefficients[u.id] || 0), 0);
+                            const deptUnits = units.filter((u) => u.type === UnitType.DEPARTAMENTO);
+                            if (deptUnits.length === 0) return;
+                            const share = Number(((100 - nonDeptSum) / deptUnits.length).toFixed(4));
+                            setCoefficients((prev) => {
+                              const next = { ...prev };
+                              for (const du of deptUnits) {
+                                next[du.id] = Math.max(0, share);
+                              }
+                              return next;
+                            });
+                          }}
+                          className="px-2.5 py-1 border border-border text-foreground text-xs font-medium rounded-lg hover:bg-card cursor-pointer"
+                          title="Repartir lo que falta para 100% entre departamentos"
+                        >
+                          Restante a Deptos
+                        </button>
+                      </div>
+
+                      {/* Lista de unidades con inputs */}
+                      <div className="max-h-48 overflow-y-auto space-y-1 pr-1 border border-border rounded-lg p-2 bg-background">
+                        {units.map((u) => (
+                          <div
+                            key={u.id}
+                            className="flex items-center justify-between py-1 px-1.5 hover:bg-muted-bg/50 rounded-md text-xs"
+                          >
+                            <div>
+                              <span className="font-bold text-foreground mr-2">U.F. {u.number}</span>
+                              <span className="text-[10px] text-muted mr-2">
+                                ({u.type === UnitType.LOCAL ? "Local" : u.floor !== null ? `Piso ${u.floor}` : "Depto"})
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                step="0.001"
+                                min="0"
+                                max="100"
+                                value={coefficients[u.id] ?? u.coefficient}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  setCoefficients((prev) => ({
+                                    ...prev,
+                                    [u.id]: isNaN(val) ? 0 : val,
+                                  }));
+                                }}
+                                className="w-20 bg-card border border-border rounded-md px-2 py-0.5 text-xs font-bold text-right text-foreground"
+                              />
+                              <span className="font-bold text-muted">%</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Total balance indicator */}
+                      <div className="flex justify-between items-center text-xs pt-1">
+                        <span className="font-bold text-muted">Suma de Coeficientes:</span>
+                        <span
+                          className={`font-black ${
+                            Math.abs(totalSum - 100) < 0.01
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : "text-amber-500"
+                          }`}
+                        >
+                          {totalSum.toFixed(3)}% {Math.abs(totalSum - 100) < 0.01 ? "✓ 100% Balanceado" : "(Ajustable)"}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="pt-3 border-t border-border flex items-center justify-end gap-3">
                 <button
                   type="button"
                   onClick={() => setIsOpen(false)}
                   disabled={isPending}
-                  className="px-4 py-2.5 rounded-xl border border-border text-xs font-semibold text-foreground hover:bg-muted-bg transition-colors"
+                  className="px-4 py-2.5 rounded-xl border border-border text-xs font-semibold text-foreground hover:bg-muted-bg transition-colors cursor-pointer"
                 >
                   Cancelar
                 </button>

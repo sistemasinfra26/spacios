@@ -389,3 +389,55 @@ export async function deleteUnit(unitId: string): Promise<ActionResponse> {
     };
   }
 }
+
+/**
+ * Actualizar masivamente los coeficientes de las unidades de un edificio
+ */
+export async function updateBuildingUnitCoefficients(
+  buildingId: string,
+  coefficients: Array<{ unitId: string; coefficient: number }>
+): Promise<ActionResponse> {
+  try {
+    const { tenantId } = await getAuthenticatedTenant();
+
+    const building = await prisma.building.findFirst({
+      where: { id: buildingId, tenantId },
+      include: { units: true },
+    });
+
+    if (!building) {
+      return { success: false, error: "Edificio no encontrado o no autorizado." };
+    }
+
+    if (!coefficients || coefficients.length === 0) {
+      return { success: false, error: "No se proporcionaron coeficientes a actualizar." };
+    }
+
+    // Actualizar todas las unidades en una transacción
+    await prisma.$transaction(
+      coefficients.map((c) =>
+        prisma.unit.update({
+          where: { id: c.unitId },
+          data: {
+            coefficient: Math.max(0, Number(c.coefficient.toFixed(4))),
+          },
+        })
+      )
+    );
+
+    revalidatePath(`/dashboard/consorcios/${buildingId}`);
+    revalidatePath("/dashboard/consorcios");
+    revalidatePath("/dashboard/expensas");
+
+    return {
+      success: true,
+      message: "Coeficientes de unidades actualizados correctamente.",
+    };
+  } catch (error) {
+    console.error("Error al actualizar coeficientes masivamente:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Error inesperado al actualizar coeficientes.",
+    };
+  }
+}

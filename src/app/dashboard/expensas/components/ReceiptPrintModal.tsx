@@ -83,11 +83,21 @@ export function ReceiptPrintModal({
     .join(" • ");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto print:p-0 print:bg-white print:fixed print:inset-0">
+    <div className="fixed inset-0 z-50 flex items-start justify-center p-2 sm:p-4 bg-black/80 backdrop-blur-sm overflow-y-auto print:p-0 print:bg-white print:fixed print:inset-0">
+      {/* Botón flotante siempre visible para cerrar */}
+      <button
+        onClick={onClose}
+        className="fixed top-4 right-4 z-50 print:hidden bg-slate-950/95 hover:bg-red-600 text-white border border-slate-700 hover:border-red-500 px-3.5 py-2 rounded-full text-xs font-bold shadow-2xl flex items-center gap-1.5 transition-all cursor-pointer"
+        title="Cerrar comprobante"
+      >
+        <span className="text-sm font-black">✕</span>
+        <span>Cerrar</span>
+      </button>
+
       {/* Contenedor Principal (Hoja de Papel Formal) */}
-      <div className="w-full max-w-3xl my-8 bg-white text-slate-900 rounded-2xl shadow-2xl overflow-hidden border border-slate-300 print:border-none print:shadow-none print:m-0 print:rounded-none print:max-w-none print:w-full">
+      <div className="w-full max-w-3xl my-4 sm:my-8 bg-white text-slate-900 rounded-2xl shadow-2xl overflow-hidden border border-slate-300 print:border-none print:shadow-none print:m-0 print:rounded-none print:max-w-none print:w-full">
         {/* Barra Superior de Controles (Visible en pantalla, oculta al imprimir) */}
-        <div className="px-6 py-3.5 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800 print:hidden">
+        <div className="sticky top-0 z-30 px-6 py-3.5 bg-slate-950 text-white flex items-center justify-between border-b border-slate-800 print:hidden shadow-lg">
           <div className="flex items-center gap-2.5">
             <span className="text-lg">📄</span>
             <div>
@@ -110,9 +120,10 @@ export function ReceiptPrintModal({
             </button>
             <button
               onClick={onClose}
-              className="px-3 py-2 text-xs text-slate-300 hover:text-white rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+              className="px-4 py-2 bg-slate-800 hover:bg-red-600 text-white text-xs font-bold rounded-xl border border-slate-700 hover:border-red-500 transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
             >
-              ✕ Cerrar
+              <span className="text-sm font-black">✕</span>
+              <span>Cerrar</span>
             </button>
           </div>
         </div>
@@ -213,7 +224,7 @@ export function ReceiptPrintModal({
               {dueDateSecondStr && (
                 <div className="flex justify-between items-center text-xs pt-1.5 border-t border-slate-200">
                   <span className="text-slate-700 font-medium">
-                    2º Vencimiento ({dueDateSecondStr}) (+{buildingInfo.interestRate}%):
+                    2º Vencimiento ({dueDateSecondStr}):
                   </span>
                   <span className="font-bold text-slate-900">
                     ${surchargeAmount.toLocaleString("es-AR", { minimumFractionDigits: 2 })}
@@ -281,7 +292,7 @@ export function ReceiptPrintModal({
                       <td className="p-3 text-amber-950 font-bold">
                         Intereses moratorios aplicados
                       </td>
-                      <td className="p-3 text-center text-amber-900 font-semibold">{buildingInfo.interestRate}%</td>
+                      <td className="p-3 text-center text-amber-900 font-semibold">-</td>
                       <td className="p-3 text-right font-black text-amber-950">
                         ${receipt.interestAmount.toLocaleString("es-AR", { minimumFractionDigits: 2 })}
                       </td>

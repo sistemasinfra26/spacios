@@ -20,6 +20,15 @@ async function ExpensasContent() {
     name: b.name,
     address: b.address,
     unitsCount: b.units?.length || 0,
+    units: (b.units || []).map((u) => ({
+      id: u.id,
+      number: u.number,
+      name: u.name,
+      type: u.type,
+      floor: u.floor,
+      door: u.door,
+      coefficient: u.coefficient,
+    })),
   }));
 
   const rawLiquidations = liquidationsRes.success ? liquidationsRes.data ?? [] : [];
@@ -34,6 +43,7 @@ async function ExpensasContent() {
     dueDateFirst: l.dueDateFirst,
     dueDateSecond: l.dueDateSecond,
     interestRate: l.interestRate,
+    notes: l.notes,
     totalAmount: l.totalAmount,
     totalCollected: l.totalCollected,
     totalPending: l.totalPending,
